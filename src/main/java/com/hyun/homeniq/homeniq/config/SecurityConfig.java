@@ -26,6 +26,14 @@ public class SecurityConfig {
                 // Actuator 헬스체크 엔드포인트는 인증 없이 접근 가능
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers("/actuator/info").permitAll()
+                // Swagger UI는 인증 없이 접근 가능
+                .requestMatchers(
+                    "/swagger-ui/**",
+                    "/swagger-ui.html",
+                    "/v3/api-docs/**",
+                    "/swagger-resources/**",
+                    "/webjars/**"
+                ).permitAll()
                 // 기타 모든 요청은 인증 필요
                 .anyRequest().authenticated()
             )
