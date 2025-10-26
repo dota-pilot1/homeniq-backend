@@ -1,0 +1,205 @@
+=================================
+MyBatis 기본 세팅 가이드
+=================================
+
+1. 폴더 구조 (SI 현장 표준 3-tier 아키텍처)
+-----------------------------------------
+
+src/main/java/com/hyun/homeniq/homeniq/
+├── config/                         설정 클래스
+│   ├── SecurityConfig.java         Spring Security 설정
+│   └── PasswordEncoderConfig.java  BCrypt 비밀번호 암호화
+│
+├── controller/                     컨트롤러 (HTTP 요청/응답만 처리)
+│   └── AuthController.java         로그인/회원가입 API
+│
+├── service/                        서비스 (비즈니스 로직, 트랜잭션 관리)
+│   ├── AuthService.java            인터페이스
+│   └── impl/
+│       └── AuthServiceImpl.java   구현체
+│
+├── mapper/                         MyBatis Mapper 인터페이스
+│   └── UserMapper.java             @Mapper 애노테이션, SQL 메서드 정의
+│
+├── model/                          데이터 모델
+│   ├── entity/                     DB 테이블과 1:1 매핑
+│   │   └── User.java
+│   ├── dto/request/                API 요청 DTO
+│   │   ├── LoginRequest.java
+│   │   └── RegisterRequest.java
+│   └── dto/response/               API 응답 DTO
+│       ├── AuthResponse.java
+│       └── UserResponse.java
+│
+└── exception/                      예외 처리
+    ├── CustomException.java
+    ├── ErrorCode.java
+    └── GlobalExceptionHandler.java  @RestControllerAdvice
+
+src/main/resources/
+├── mapper/                         MyBatis XML 매퍼 (SQL 쿼리 작성)
+│   └── UserMapper.xml
+├── schema/                         DB 스키마
+│   └── schema.sql
+└── application.properties          설정 파일
+
+
+2. 데이터 흐름
+-----------------------------------------
+
+Client Request
+    ↓
+Controller (검증, DTO 변환)
+    ↓
+Service (비즈니스 로직, @Transactional)
+    ↓
+Mapper Interface (메서드 호출)
+    ↓
+Mapper XML (SQL 실행)
+    ↓
+Database (MySQL)
+
+
+3. DB 생성 명령어
+-----------------------------------------
+
+Docker MySQL 컨테이너에서 실행:
+
+# 테이블 생성
+docker exec -i homeniq-mysql mysql -u homeniq -p'homeniq1234' homeniq < src/main/resources/schema/schema.sql
+
+# 테이블 확인
+docker exec homeniq-mysql mysql -u homeniq -p'homeniq1234' homeniq -e "SHOW TABLES;"
+
+# 테이블 구조 확인
+docker exec homeniq-mysql mysql -u homeniq -p'homeniq1234' homeniq -e "DESC users;"
+
+# 데이터 확인
+docker exec homeniq-mysql mysql -u homeniq -p'homeniq1234' homeniq -e "SELECT * FROM users;"
+
+
+4. MyBatis 핵심 설정 (application.properties)
+-----------------------------------------
+
+# MyBatis XML 매퍼 위치
+mybatis.mapper-locations=classpath:mapper/**/*.xml
+
+# 패키지 별칭 설정 (XML에서 풀 패키지명 생략 가능)
+mybatis.type-aliases-package=com.hyun.homeniq.homeniq
+
+# snake_case -> camelCase 자동 변환 (DB: created_at -> Java: createdAt)
+mybatis.configuration.map-underscore-to-camel-case=true
+
+
+5. 주요 구현 내용
+-----------------------------------------
+
+(1) Mapper 인터페이스 (UserMapper.java)
+
+@Mapper  // MyBatis가 자동으로 구현체 생성
+public interface UserMapper {
+    User findByEmail(@Param("email") String email);
+    int insert(User user);
+}
+
+
+(2) Mapper XML (UserMapper.xml)
+
+<!-- namespace는 Mapper 인터페이스 풀 패키지명 -->
+<mapper namespace="com.hyun.homeniq.homeniq.mapper.UserMapper">
+
+    <!-- resultMap: DB 컬럼 -> Java 필드 매핑 -->
+    <resultMap id="UserResultMap" type="com.hyun.homeniq.homeniq.model.entity.User">
+        <id property="id" column="id"/>
+        <result property="email" column="email"/>
+    </resultMap>
+
+    <!-- SQL 쿼리 -->
+    <select id="findByEmail" resultMap="UserResultMap">
+        SELECT * FROM users WHERE email = #{email}
+    </select>
+
+    <!-- useGeneratedKeys: Auto Increment ID를 entity에 자동 설정 -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO users (email, password, name)
+        VALUES (#{email}, #{password}, #{name})
+    </insert>
+</mapper>
+
+
+(3) Service에서 Mapper 사용
+
+@Service
+public class AuthServiceImpl implements AuthService {
+
+    private final UserMapper userMapper;
+
+    @Transactional
+    public AuthResponse register(RegisterRequest request) {
+        User user = new User();
+        user.setEmail(request.getEmail());
+        userMapper.insert(user);  // MyBatis가 SQL 실행
+        return response;
+    }
+}
+
+
+6. MyBatis vs JPA 차이점
+-----------------------------------------
+
+구분            MyBatis                 JPA/Hibernate
+SQL 작성        개발자가 직접 XML에      자동 생성
+테이블 생성     수동 (schema.sql)       자동 (ddl-auto)
+복잡한 쿼리     쉬움 (SQL 직접 제어)    어려움 (JPQL/Querydsl)
+학습 곡선       낮음 (SQL만 알면 됨)    높음 (ORM 개념 필요)
+사용처          SI 현장, 레거시 DB      신규 프로젝트, 스타트업
+
+
+7. 주요 애노테이션
+-----------------------------------------
+
+- @Mapper: MyBatis Mapper 인터페이스 표시
+- @Param("name"): 파라미터 이름 명시 (XML에서 #{name}으로 사용)
+- @Transactional: 트랜잭션 관리 (Service 계층에 사용)
+- @Service: Spring이 Service 빈으로 등록
+- @RestController: REST API 컨트롤러
+- @RestControllerAdvice: 전역 예외 처리
+
+
+8. 백엔드 실행 및 테스트
+-----------------------------------------
+
+# 백엔드 실행
+cd homeniq-backend
+./gradlew bootRun
+
+# 또는
+gradle bootRun
+
+# 로그 확인
+tail -f logs/spring.log
+
+
+9. 트러블슈팅
+-----------------------------------------
+
+문제: Table 'homeniq.users' doesn't exist
+해결: schema.sql 실행 안 됨 → Docker로 테이블 생성
+
+문제: Mapper XML을 찾지 못함
+해결: mybatis.mapper-locations 경로 확인
+
+문제: 파라미터 바인딩 실패
+해결: @Param 애노테이션 추가 또는 parameterType 명시
+
+
+10. 참고사항
+-----------------------------------------
+
+- MyBatis는 테이블 자동 생성 안 됨 (수동 DDL 필요)
+- XML의 namespace는 반드시 Mapper 인터페이스 풀 패키지명과 일치
+- SQL의 id는 Mapper 인터페이스의 메서드명과 일치
+- useGeneratedKeys="true"로 Auto Increment ID를 Entity에 자동 설정
+- resultMap 사용 시 명확한 컬럼 매핑 가능
+- #{변수명}은 PreparedStatement (SQL Injection 방지)
+- ${변수명}은 문자열 치환 (위험, 사용 지양)

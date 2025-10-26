@@ -1,0 +1,244 @@
+=================================
+Flyway DB 마이그레이션 개요
+=================================
+
+1. Flyway란?
+-----------------------------------------
+
+DB 스키마 버전 관리 도구
+- Git처럼 DB 변경 이력을 관리
+- 순차적으로 마이그레이션 실행
+- 실행 이력을 DB에 저장 (flyway_schema_history 테이블)
+- 롤백, 히스토리 추적, 여러 환경 동기화 가능
+
+
+2. schema.sql vs Flyway
+-----------------------------------------
+
+방식              schema.sql           Flyway
+버전 관리         X                    O (V1, V2, V3...)
+실행 이력 추적    X                    O (테이블에 기록)
+롤백              X                    O (Undo 스크립트)
+협업              충돌 가능성          순차 실행으로 안전
+여러 환경         수동 관리            자동 동기화
+적용 대상         소규모 프로젝트      중대규모, 프로덕션
+SI 현장 사용      중소형               대형, 금융권
+
+
+3. Flyway 동작 원리
+-----------------------------------------
+
+1) 첫 실행 시:
+   - flyway_schema_history 테이블 자동 생성
+   - db/migration/ 폴더의 SQL 파일들을 순서대로 실행
+   - 실행한 파일 정보를 flyway_schema_history에 기록
+
+2) 이후 실행 시:
+   - 이미 실행된 파일은 건너뜀
+   - 새로운 파일만 실행
+   - 파일 체크섬 검증 (수정 방지)
+
+3) 파일 이름 규칙:
+   V{버전}__{설명}.sql
+   예: V1__create_users_table.sql
+
+
+4. Flyway 파일 구조
+-----------------------------------------
+
+src/main/resources/
+└── db/
+    └── migration/
+        ├── V1__create_users_table.sql        # 사용자 테이블 생성
+        ├── V2__add_phone_to_users.sql        # 전화번호 컬럼 추가
+        ├── V3__create_products_table.sql     # 상품 테이블 생성
+        ├── V4__add_index_to_users.sql        # 인덱스 추가
+        └── V5__alter_users_add_status.sql    # 상태 컬럼 추가
+
+주의사항:
+- 파일명은 V{숫자}__{설명}.sql 형식
+- 버전 번호는 순차적 (V1, V2, V3...)
+- 한번 실행된 파일은 절대 수정 금지 (체크섬 에러 발생)
+- 새로운 변경은 새 파일로 추가
+
+
+5. Gradle 의존성 추가
+-----------------------------------------
+
+build.gradle에 추가:
+
+dependencies {
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-mysql'
+}
+
+
+6. application.properties 설정
+-----------------------------------------
+
+# Flyway 설정
+spring.flyway.enabled=true
+spring.flyway.locations=classpath:db/migration
+spring.flyway.baseline-on-migrate=true
+spring.flyway.baseline-version=0
+spring.flyway.encoding=UTF-8
+
+# 기존 DB에 Flyway 적용 시
+spring.flyway.baseline-on-migrate=true  # 기존 테이블이 있어도 에러 안남
+
+
+7. 마이그레이션 파일 예제
+-----------------------------------------
+
+V1__create_users_table.sql:
+
+CREATE TABLE users (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+V2__add_phone_to_users.sql:
+
+ALTER TABLE users ADD COLUMN phone VARCHAR(20);
+
+
+V3__create_products_table.sql:
+
+CREATE TABLE products (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    price INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+8. Flyway 실행 방법
+-----------------------------------------
+
+(1) Spring Boot 애플리케이션 시작 시 자동 실행
+    - spring.flyway.enabled=true 설정 시
+    - 앱 시작할 때 자동으로 마이그레이션 실행
+
+(2) Gradle 명령어로 수동 실행
+    ./gradlew flywayMigrate
+    ./gradlew flywayInfo     # 마이그레이션 상태 확인
+    ./gradlew flywayValidate # 파일 체크섬 검증
+    ./gradlew flywayClean    # 모든 테이블 삭제 (개발 시에만!)
+
+
+9. flyway_schema_history 테이블
+-----------------------------------------
+
+Flyway가 자동으로 생성하는 이력 관리 테이블:
+
+installed_rank | version | description              | script                        | checksum    | installed_on        | success
+---------------|---------|--------------------------|-------------------------------|-------------|---------------------|--------
+1              | 1       | create users table       | V1__create_users_table.sql    | -1234567890 | 2025-01-15 10:30:00 | true
+2              | 2       | add phone to users       | V2__add_phone_to_users.sql    | 987654321   | 2025-01-16 14:20:00 | true
+3              | 3       | create products table    | V3__create_products_table.sql | 123456789   | 2025-01-17 09:15:00 | true
+
+
+10. 협업 시나리오
+-----------------------------------------
+
+개발자 A:
+1. V4__add_user_role.sql 작성
+2. Git push
+
+개발자 B:
+1. Git pull
+2. 백엔드 재시작 → Flyway가 자동으로 V4 실행
+3. DB 자동 동기화 완료!
+
+
+11. 운영 배포 시나리오
+-----------------------------------------
+
+1) 개발 환경에서 마이그레이션 작성 및 테스트
+   - V5__add_payment_table.sql 작성
+   - 로컬 DB에서 테스트
+
+2) Git에 커밋 & 푸시
+
+3) CI/CD 파이프라인에서 자동 실행
+   - 스테이징 DB에 자동 적용
+   - 운영 DB에 자동 적용
+
+4) 모든 환경의 DB가 동일한 상태로 유지됨
+
+
+12. 주의사항
+-----------------------------------------
+
+(1) 실행된 파일 절대 수정 금지
+    - 체크섬 에러 발생
+    - 새로운 변경은 새 파일로 추가
+
+(2) 파일명 규칙 엄수
+    - V{숫자}__{설명}.sql
+    - 중간에 버전 번호 건너뛰지 말 것
+
+(3) 롤백 계획 수립
+    - Undo 스크립트 작성 (Flyway Pro)
+    - 또는 수동 롤백 SQL 준비
+
+(4) 운영 DB 백업 필수
+    - 마이그레이션 전 반드시 백업
+
+
+13. schema.sql에서 Flyway로 마이그레이션
+-----------------------------------------
+
+(1) 기존 schema.sql 파일을 V1__initial_schema.sql로 이동
+    schema/schema.sql → db/migration/V1__initial_schema.sql
+
+(2) application.properties 설정
+    spring.flyway.baseline-on-migrate=true
+
+(3) 백엔드 재시작
+    - Flyway가 flyway_schema_history 테이블 생성
+    - V1 파일 실행 (이미 테이블 있으면 baseline 처리)
+
+
+14. Flyway vs Liquibase
+-----------------------------------------
+
+구분         Flyway                    Liquibase
+파일 형식    SQL (간단)                XML/YAML/JSON (복잡)
+학습 곡선    낮음                      높음
+SQL 제어     완전 제어                 추상화됨
+사용처       대부분의 프로젝트         복잡한 엔터프라이즈
+인기도       더 높음                   금융권/대기업
+
+
+15. 결론 및 추천
+-----------------------------------------
+
+소규모 프로젝트 (1-2명):
+→ schema.sql 사용 (간단)
+
+중규모 이상 (3명+):
+→ Flyway 적극 추천
+
+대규모/금융권:
+→ Flyway 또는 Liquibase 필수
+
+SI 현장:
+→ 중소형: schema.sql
+→ 대형: Flyway 표준
+
+
+16. 실전 팁
+-----------------------------------------
+
+- 마이그레이션 파일은 짧고 명확하게 작성
+- 한 파일에 하나의 변경사항만 포함
+- 테이블 생성, 컬럼 추가, 인덱스 추가 등 분리
+- 운영 DB 적용 전 스테이징에서 충분히 테스트
+- 대용량 데이터 마이그레이션은 별도 배치 작업 고려
