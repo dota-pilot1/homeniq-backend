@@ -1,0 +1,1090 @@
+# 고난이도 SQL 20가지 실무 시나리오 - Super-HomeniQ
+
+## 1. 윈도우 함수 (Window Functions) - 순위 및 누적
+
+### 시나리오: 월별 주문 금액 TOP 3 주민 (동별)
+```sql
+WITH monthly_orders AS (
+    SELECT
+        u.dong,
+        u.name,
+        DATE_FORMAT(o.ordered_at, '%Y-%m') as order_month,
+        SUM(o.total_amount) as monthly_total
+    FROM users u
+    INNER JOIN orders o ON u.id = o.user_id
+    GROUP BY u.dong, u.id, u.name, order_month
+)
+SELECT
+    dong,
+    order_month,
+    name,
+    monthly_total,
+    ROW_NUMBER() OVER (PARTITION BY dong, order_month ORDER BY monthly_total DESC) as rank
+FROM monthly_orders
+WHERE rank <= 3;
+```
+
+---
+
+## 2. 재귀 쿼리 (Recursive CTE) - 계층 구조
+
+### 시나리오: 추천인 트리 구조 (주민 추천 시스템)
+```sql
+-- users 테이블에 referrer_id 컬럼 추가 가정
+WITH RECURSIVE referral_tree AS (
+    -- 최상위 추천인 (Base case)
+    SELECT
+        id,
+        name,
+        referrer_id,
+        1 as level,
+        CAST(name AS CHAR(1000)) as path
+    FROM users
+    WHERE referrer_id IS NULL
+
+    UNION ALL
+
+    -- 재귀 부분
+    SELECT
+        u.id,
+        u.name,
+        u.referrer_id,
+        rt.level + 1,
+        CONCAT(rt.path, ' > ', u.name)
+    FROM users u
+    INNER JOIN referral_tree rt ON u.referrer_id = rt.id
+    WHERE rt.level < 5  -- 최대 5단계까지
+)
+SELECT
+    level,
+    name,
+    path,
+    (SELECT COUNT(*) FROM users WHERE referrer_id = referral_tree.id) as direct_referrals
+FROM referral_tree
+ORDER BY level, name;
+```
+
+---
+
+## 3. 피벗 테이블 (Pivot) - 행을 열로 전환
+
+### 시나리오: 동별 디바이스 타입별 현황 (가로로 표시)
+```sql
+SELECT
+    u.dong,
+    SUM(CASE WHEN d.device_type = '조명' THEN 1 ELSE 0 END) as light_count,
+    SUM(CASE WHEN d.device_type = '에어컨' THEN 1 ELSE 0 END) as ac_count,
+    SUM(CASE WHEN d.device_type = '난방' THEN 1 ELSE 0 END) as heat_count,
+    SUM(CASE WHEN d.device_type = '환기' THEN 1 ELSE 0 END) as vent_count,
+    SUM(CASE WHEN d.status = 'ON' AND d.device_type = '조명' THEN 1 ELSE 0 END) as light_on,
+    SUM(CASE WHEN d.status = 'ON' AND d.device_type = '에어컨' THEN 1 ELSE 0 END) as ac_on
+FROM users u
+LEFT JOIN devices d ON u.id = d.user_id
+GROUP BY u.dong
+ORDER BY u.dong;
+```
+
+---
+
+## 4. 이동 평균 (Moving Average) - 시계열 분석
+
+### 시나리오: 최근 7일 주문량 이동 평균
+```sql
+WITH daily_orders AS (
+    SELECT
+        DATE(ordered_at) as order_date,
+        COUNT(*) as order_count,
+        SUM(total_amount) as daily_revenue
+    FROM orders
+    WHERE ordered_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY DATE(ordered_at)
+)
+SELECT
+    order_date,
+    order_count,
+    daily_revenue,
+    AVG(order_count) OVER (
+        ORDER BY order_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) as moving_avg_7day,
+    AVG(daily_revenue) OVER (
+        ORDER BY order_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) as revenue_moving_avg
+FROM daily_orders
+ORDER BY order_date DESC;
+```
+
+---
+
+## 5. 갭 분석 (Gap Analysis) - 연속된 데이터의 빈틈 찾기
+
+### 시나리오: 예약 가능한 시간대 찾기 (빈 시간 슬롯)
+```sql
+WITH RECURSIVE time_slots AS (
+    -- 09:00부터 21:00까지 1시간 단위
+    SELECT 9 as hour
+    UNION ALL
+    SELECT hour + 1 FROM time_slots WHERE hour < 21
+),
+booked_slots AS (
+    SELECT DISTINCT HOUR(start_time) as booked_hour
+    FROM reservations
+    WHERE facility_id = 1
+      AND reservation_date = '2025-10-28'
+)
+SELECT
+    ts.hour,
+    CONCAT(LPAD(ts.hour, 2, '0'), ':00 - ', LPAD(ts.hour + 1, 2, '0'), ':00') as time_slot,
+    CASE
+        WHEN bs.booked_hour IS NULL THEN '예약 가능'
+        ELSE '예약됨'
+    END as status
+FROM time_slots ts
+LEFT JOIN booked_slots bs ON ts.hour = bs.booked_hour
+ORDER BY ts.hour;
+```
+
+---
+
+## 6. 동적 피벗 (Dynamic Pivot) - 열 이름이 가변적
+
+### 시나리오: 시설별 일별 예약 건수 (시설이 동적으로 추가됨)
+```sql
+-- MySQL에서는 준비된 문(Prepared Statement) 필요
+SET @sql = NULL;
+
+SELECT
+    GROUP_CONCAT(
+        DISTINCT CONCAT(
+            'SUM(CASE WHEN f.name = ''',
+            name,
+            ''' THEN 1 ELSE 0 END) AS `',
+            name, '`'
+        )
+    ) INTO @sql
+FROM community_facilities;
+
+SET @sql = CONCAT(
+    'SELECT DATE(r.reservation_date) as date, ',
+    @sql,
+    ' FROM reservations r
+     INNER JOIN community_facilities f ON r.facility_id = f.id
+     WHERE r.reservation_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+     GROUP BY DATE(r.reservation_date)
+     ORDER BY date DESC'
+);
+
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+```
+
+---
+
+## 7. 누적 합계 (Running Total)
+
+### 시나리오: 주민별 누적 주문 금액 (시간순)
+```sql
+SELECT
+    u.name,
+    o.ordered_at,
+    o.total_amount,
+    SUM(o.total_amount) OVER (
+        PARTITION BY u.id
+        ORDER BY o.ordered_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) as cumulative_total
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE u.id = 1
+ORDER BY o.ordered_at;
+```
+
+---
+
+## 8. 퍼센타일 계산 (Percentile)
+
+### 시나리오: 주문 금액 분포 - 상위 10%, 중간 50%, 하위 10%
+```sql
+WITH order_percentiles AS (
+    SELECT
+        total_amount,
+        PERCENT_RANK() OVER (ORDER BY total_amount) as percentile
+    FROM orders
+)
+SELECT
+    ROUND(MIN(CASE WHEN percentile >= 0.90 THEN total_amount END), 2) as top_10_percent,
+    ROUND(MIN(CASE WHEN percentile >= 0.50 THEN total_amount END), 2) as median,
+    ROUND(MAX(CASE WHEN percentile <= 0.10 THEN total_amount END), 2) as bottom_10_percent
+FROM order_percentiles;
+```
+
+---
+
+## 9. 자기 조인 (Self Join) - 같은 조건의 다른 레코드 찾기
+
+### 시나리오: 같은 동에 사는 이웃 찾기
+```sql
+SELECT
+    u1.name as resident,
+    u1.dong,
+    u1.ho,
+    u2.name as neighbor,
+    u2.ho as neighbor_ho,
+    ABS(CAST(u1.ho AS SIGNED) - CAST(u2.ho AS SIGNED)) as floor_diff
+FROM users u1
+INNER JOIN users u2
+    ON u1.dong = u2.dong
+    AND u1.id != u2.id
+    AND ABS(CAST(u1.ho AS SIGNED) - CAST(u2.ho AS SIGNED)) <= 2
+WHERE u1.id = 1
+ORDER BY floor_diff;
+```
+
+---
+
+## 10. 상관 서브쿼리 (Correlated Subquery)
+
+### 시나리오: 각 주민의 평균 주문 금액보다 큰 주문만 조회
+```sql
+SELECT
+    u.name,
+    o.ordered_at,
+    o.total_amount,
+    (SELECT AVG(total_amount)
+     FROM orders
+     WHERE user_id = u.id) as personal_avg
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE o.total_amount > (
+    SELECT AVG(total_amount)
+    FROM orders
+    WHERE user_id = u.id
+)
+ORDER BY u.name, o.ordered_at DESC;
+```
+
+---
+
+## 11. EXISTS vs IN - 성능 차이 활용
+
+### 시나리오: 최근 30일 내 주문한 주민만 조회 (EXISTS가 더 빠름)
+```sql
+-- BAD: IN (서브쿼리 전체 실행)
+SELECT u.name, u.dong, u.ho
+FROM users u
+WHERE u.id IN (
+    SELECT user_id
+    FROM orders
+    WHERE ordered_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+);
+
+-- GOOD: EXISTS (조건 만족 시 즉시 중단)
+SELECT u.name, u.dong, u.ho
+FROM users u
+WHERE EXISTS (
+    SELECT 1
+    FROM orders o
+    WHERE o.user_id = u.id
+      AND o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+);
+```
+
+---
+
+## 12. 복잡한 GROUP BY + HAVING
+
+### 시나리오: 3개 이상 디바이스를 보유하고, 월 평균 주문 금액이 10만원 이상인 주민
+```sql
+SELECT
+    u.dong,
+    u.ho,
+    u.name,
+    COUNT(DISTINCT d.id) as device_count,
+    COUNT(DISTINCT o.id) as order_count,
+    AVG(o.total_amount) as avg_order_amount,
+    SUM(o.total_amount) as total_spent
+FROM users u
+LEFT JOIN devices d ON u.id = d.user_id
+LEFT JOIN orders o ON u.id = o.user_id
+    AND o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+GROUP BY u.id, u.dong, u.ho, u.name
+HAVING device_count >= 3
+   AND avg_order_amount >= 100000
+ORDER BY total_spent DESC;
+```
+
+---
+
+## 13. 날짜 범위별 집계 (Date Bucketing)
+
+### 시나ري오: 시간대별 디바이스 사용 패턴 분석
+```sql
+SELECT
+    CASE
+        WHEN HOUR(controlled_at) BETWEEN 0 AND 5 THEN '새벽(00-06)'
+        WHEN HOUR(controlled_at) BETWEEN 6 AND 11 THEN '오전(06-12)'
+        WHEN HOUR(controlled_at) BETWEEN 12 AND 17 THEN '오후(12-18)'
+        ELSE '저녁(18-24)'
+    END as time_period,
+    d.device_type,
+    COUNT(*) as usage_count,
+    AVG(CASE WHEN dcl.action = 'SET_TEMPERATURE' THEN dcl.value END) as avg_temp
+FROM device_control_logs dcl
+INNER JOIN devices d ON dcl.device_id = d.id
+WHERE dcl.controlled_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+GROUP BY time_period, d.device_type
+ORDER BY
+    FIELD(time_period, '새벽(00-06)', '오전(06-12)', '오후(12-18)', '저녁(18-24)'),
+    usage_count DESC;
+```
+
+---
+
+## 14. 연속된 이벤트 찾기 (Consecutive Events)
+
+### 시나리오: 3일 연속 주문한 주민 찾기
+```sql
+WITH daily_orders AS (
+    SELECT DISTINCT
+        user_id,
+        DATE(ordered_at) as order_date
+    FROM orders
+),
+date_diff AS (
+    SELECT
+        user_id,
+        order_date,
+        LAG(order_date, 1) OVER (PARTITION BY user_id ORDER BY order_date) as prev_date,
+        LAG(order_date, 2) OVER (PARTITION BY user_id ORDER BY order_date) as prev_date_2
+    FROM daily_orders
+)
+SELECT DISTINCT
+    u.name,
+    u.dong,
+    u.ho,
+    dd.order_date as end_date
+FROM date_diff dd
+INNER JOIN users u ON dd.user_id = u.id
+WHERE DATEDIFF(dd.order_date, dd.prev_date) = 1
+  AND DATEDIFF(dd.prev_date, dd.prev_date_2) = 1;
+```
+
+---
+
+## 15. 복합 조건 집계
+
+### 시나리오: 디바이스별 효율성 점수 계산
+```sql
+SELECT
+    u.dong,
+    u.name,
+    d.device_type,
+    d.device_name,
+    COUNT(dcl.id) as total_controls,
+    SUM(CASE WHEN dcl.action = 'ON' THEN 1 ELSE 0 END) as on_count,
+    SUM(CASE WHEN dcl.action = 'OFF' THEN 1 ELSE 0 END) as off_count,
+    -- 효율성 점수: ON/OFF 비율이 균형적일수록 높음
+    CASE
+        WHEN COUNT(dcl.id) = 0 THEN 0
+        ELSE 100 - ABS(
+            (SUM(CASE WHEN dcl.action = 'ON' THEN 1 ELSE 0 END) * 100.0 / COUNT(dcl.id)) - 50
+        ) * 2
+    END as efficiency_score
+FROM devices d
+INNER JOIN users u ON d.user_id = u.id
+LEFT JOIN device_control_logs dcl ON d.id = dcl.device_id
+    AND dcl.controlled_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+GROUP BY u.dong, u.name, d.id, d.device_type, d.device_name
+HAVING total_controls > 10
+ORDER BY efficiency_score DESC;
+```
+
+---
+
+## 16. 교차 집계 (Cross Tabulation)
+
+### 시나리오: 동별 x 시설별 예약 건수 매트릭스
+```sql
+SELECT
+    u.dong,
+    COUNT(DISTINCT u.id) as total_residents,
+    COUNT(DISTINCT CASE WHEN f.facility_type = '골프존' THEN r.id END) as golf_reservations,
+    COUNT(DISTINCT CASE WHEN f.facility_type = '독서실' THEN r.id END) as library_reservations,
+    COUNT(DISTINCT CASE WHEN f.facility_type = '피트니스' THEN r.id END) as fitness_reservations,
+    ROUND(
+        COUNT(DISTINCT r.id) * 100.0 / COUNT(DISTINCT u.id),
+        2
+    ) as reservation_rate_per_resident
+FROM users u
+LEFT JOIN reservations r ON u.id = r.user_id
+    AND r.reservation_date >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+LEFT JOIN community_facilities f ON r.facility_id = f.id
+GROUP BY u.dong
+ORDER BY u.dong;
+```
+
+---
+
+## 17. 중복 제거 후 집계 (DISTINCT Aggregation)
+
+### 시나리오: 실제 활성 사용자 수 (중복 제거)
+```sql
+SELECT
+    DATE(activity_date) as date,
+    COUNT(DISTINCT order_user_id) as unique_order_users,
+    COUNT(DISTINCT reservation_user_id) as unique_reservation_users,
+    COUNT(DISTINCT device_user_id) as unique_device_users,
+    COUNT(DISTINCT
+        COALESCE(order_user_id, reservation_user_id, device_user_id)
+    ) as total_unique_active_users
+FROM (
+    SELECT ordered_at as activity_date, user_id as order_user_id,
+           NULL as reservation_user_id, NULL as device_user_id
+    FROM orders
+    WHERE ordered_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+
+    UNION ALL
+
+    SELECT reservation_date, NULL, user_id, NULL
+    FROM reservations
+    WHERE reservation_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+
+    UNION ALL
+
+    SELECT controlled_at, NULL, NULL, d.user_id
+    FROM device_control_logs dcl
+    INNER JOIN devices d ON dcl.device_id = d.id
+    WHERE controlled_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+) as activities
+GROUP BY DATE(activity_date)
+ORDER BY date DESC;
+```
+
+---
+
+## 18. 비율 계산 (Ratio Calculation)
+
+### 시나리오: 주문 전환율 분석 (장바구니 → 주문)
+```sql
+-- cart_items 테이블 가정
+WITH cart_stats AS (
+    SELECT
+        user_id,
+        COUNT(DISTINCT product_id) as products_in_cart,
+        SUM(quantity) as total_items_in_cart
+    FROM cart_items
+    GROUP BY user_id
+),
+order_stats AS (
+    SELECT
+        o.user_id,
+        COUNT(DISTINCT o.id) as order_count,
+        COUNT(DISTINCT oi.product_id) as products_ordered
+    FROM orders o
+    INNER JOIN order_items oi ON o.id = oi.order_id
+    WHERE o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY o.user_id
+)
+SELECT
+    u.name,
+    u.dong,
+    u.ho,
+    COALESCE(cs.products_in_cart, 0) as products_in_cart,
+    COALESCE(os.order_count, 0) as orders_made,
+    COALESCE(os.products_ordered, 0) as products_ordered,
+    CASE
+        WHEN cs.products_in_cart > 0 THEN
+            ROUND(os.products_ordered * 100.0 / cs.products_in_cart, 2)
+        ELSE 0
+    END as conversion_rate_percent
+FROM users u
+LEFT JOIN cart_stats cs ON u.id = cs.user_id
+LEFT JOIN order_stats os ON u.id = os.user_id
+WHERE cs.products_in_cart > 0 OR os.order_count > 0
+ORDER BY conversion_rate_percent DESC;
+```
+
+---
+
+## 19. 시계열 갭 채우기 (Fill Missing Dates)
+
+### 시나리오: 지난 30일 일별 주문 건수 (빈 날짜도 0으로 표시)
+```sql
+WITH RECURSIVE date_range AS (
+    SELECT DATE_SUB(CURDATE(), INTERVAL 29 DAY) as date
+    UNION ALL
+    SELECT DATE_ADD(date, INTERVAL 1 DAY)
+    FROM date_range
+    WHERE date < CURDATE()
+)
+SELECT
+    dr.date,
+    DAYNAME(dr.date) as day_of_week,
+    COALESCE(COUNT(o.id), 0) as order_count,
+    COALESCE(SUM(o.total_amount), 0) as daily_revenue,
+    COALESCE(AVG(o.total_amount), 0) as avg_order_amount
+FROM date_range dr
+LEFT JOIN orders o ON DATE(o.ordered_at) = dr.date
+GROUP BY dr.date
+ORDER BY dr.date;
+```
+
+---
+
+## 20. 복잡한 필터링 조건 (Advanced Filtering)
+
+### 시나리오: VIP 주민 선정 (복합 조건)
+```sql
+WITH user_metrics AS (
+    SELECT
+        u.id,
+        u.name,
+        u.dong,
+        u.ho,
+        -- 디바이스 점수 (개수 * 10)
+        COUNT(DISTINCT d.id) * 10 as device_score,
+        -- 주문 점수 (총 금액 / 10000)
+        COALESCE(SUM(o.total_amount), 0) / 10000 as order_score,
+        -- 예약 점수 (예약 건수 * 5)
+        COUNT(DISTINCT r.id) * 5 as reservation_score,
+        -- 활동 점수 (최근 로그 수)
+        COUNT(DISTINCT dcl.id) as activity_score
+    FROM users u
+    LEFT JOIN devices d ON u.id = d.user_id
+    LEFT JOIN orders o ON u.id = o.user_id
+        AND o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+    LEFT JOIN reservations r ON u.id = r.user_id
+        AND r.reservation_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+    LEFT JOIN device_control_logs dcl ON d.id = dcl.device_id
+        AND dcl.controlled_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    GROUP BY u.id, u.name, u.dong, u.ho
+)
+SELECT
+    name,
+    dong,
+    ho,
+    device_score,
+    order_score,
+    reservation_score,
+    activity_score,
+    (device_score + order_score + reservation_score + activity_score) as total_score,
+    CASE
+        WHEN (device_score + order_score + reservation_score + activity_score) >= 100 THEN 'VIP'
+        WHEN (device_score + order_score + reservation_score + activity_score) >= 50 THEN 'GOLD'
+        WHEN (device_score + order_score + reservation_score + activity_score) >= 20 THEN 'SILVER'
+        ELSE 'BRONZE'
+    END as tier
+FROM user_metrics
+WHERE (device_score + order_score + reservation_score + activity_score) > 0
+ORDER BY total_score DESC
+LIMIT 20;
+```
+
+---
+
+## 난이도별 분류
+
+### 🔥 매우 어려움 (Advanced)
+- #2: 재귀 쿼리 (Recursive CTE)
+- #6: 동적 피벗 (Dynamic Pivot)
+- #14: 연속된 이벤트 찾기
+- #17: 중복 제거 후 집계
+
+### 🔴 어려움 (Intermediate-Advanced)
+- #1: 윈도우 함수
+- #4: 이동 평균
+- #8: 퍼센타일 계산
+- #15: 복합 조건 집계
+- #20: 복잡한 필터링
+
+### 🟡 중급 (Intermediate)
+- #3: 피벗 테이블
+- #5: 갭 분석
+- #7: 누적 합계
+- #10: 상관 서브쿼리
+- #13: 날짜 범위별 집계
+
+### 🟢 기본 응용 (Basic-Intermediate)
+- #9: 자기 조인
+- #11: EXISTS vs IN
+- #12: 복잡한 GROUP BY
+- #16: 교차 집계
+- #18: 비율 계산
+- #19: 시계열 갭 채우기
+
+---
+
+## 학습 순서 추천
+
+1. **기본**: JOIN, GROUP BY, HAVING (#9, #12)
+2. **윈도우 함수**: ROW_NUMBER, RANK, SUM OVER (#1, #7)
+3. **날짜 처리**: 시계열 분석, 갭 채우기 (#13, #19)
+4. **고급 집계**: 피벗, 교차 집계 (#3, #16)
+5. **최적화**: EXISTS, 상관 서브쿼리 (#10, #11)
+6. **마스터**: 재귀, 동적 SQL (#2, #6)
+
+---
+
+## 21. UNION vs UNION ALL 성능 차이
+
+### 시나리오: 전체 활동 로그 통합 (중복 제거 불필요)
+```sql
+-- BAD: UNION (중복 제거 오버헤드)
+SELECT user_id, 'ORDER' as activity_type, ordered_at as activity_time
+FROM orders
+UNION
+SELECT user_id, 'RESERVATION', reservation_date
+FROM reservations
+UNION
+SELECT d.user_id, 'DEVICE_CONTROL', controlled_at
+FROM device_control_logs dcl
+INNER JOIN devices d ON dcl.device_id = d.id;
+
+-- GOOD: UNION ALL (중복 제거 안함, 훨씬 빠름)
+SELECT user_id, 'ORDER' as activity_type, ordered_at as activity_time
+FROM orders
+UNION ALL
+SELECT user_id, 'RESERVATION', reservation_date
+FROM reservations
+UNION ALL
+SELECT d.user_id, 'DEVICE_CONTROL', controlled_at
+FROM device_control_logs dcl
+INNER JOIN devices d ON dcl.device_id = d.id
+ORDER BY activity_time DESC
+LIMIT 100;
+```
+
+---
+
+## 22. JSON 데이터 처리
+
+### 시나리오: 디바이스 설정을 JSON으로 저장하고 조회
+```sql
+-- devices 테이블에 settings JSON 컬럼 가정
+-- settings 예시: {"brightness": 80, "temperature": 24, "mode": "auto"}
+
+-- JSON 필드로 필터링
+SELECT
+    u.name,
+    d.device_name,
+    d.settings,
+    JSON_EXTRACT(d.settings, '$.temperature') as temperature,
+    JSON_EXTRACT(d.settings, '$.mode') as mode
+FROM devices d
+INNER JOIN users u ON d.user_id = u.id
+WHERE JSON_EXTRACT(d.settings, '$.temperature') > 25;
+
+-- JSON 배열 처리
+-- features 예시: ["timer", "voice_control", "energy_saving"]
+SELECT
+    device_name,
+    JSON_LENGTH(features) as feature_count,
+    JSON_CONTAINS(features, '"voice_control"') as has_voice_control
+FROM devices
+WHERE JSON_CONTAINS(features, '"energy_saving"') = 1;
+```
+
+---
+
+## 23. 트랜잭션 격리 수준과 잠금
+
+### 시나리오: 동시 예약 방지 (비관적 락)
+```sql
+START TRANSACTION;
+
+-- FOR UPDATE: 해당 row를 잠금
+SELECT *
+FROM reservations
+WHERE facility_id = 1
+  AND reservation_date = '2025-10-28'
+  AND start_time = '14:00'
+FOR UPDATE;
+
+-- 예약이 없으면 INSERT
+INSERT INTO reservations (user_id, facility_id, reservation_date, start_time, end_time, status)
+SELECT 1, 1, '2025-10-28', '14:00', '15:00', 'CONFIRMED'
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM reservations
+    WHERE facility_id = 1
+      AND reservation_date = '2025-10-28'
+      AND start_time = '14:00'
+);
+
+COMMIT;
+```
+
+---
+
+## 24. 파티션 테이블 쿼리 최적화
+
+### 시나리오: 날짜별 파티션된 로그 테이블 조회
+```sql
+-- device_control_logs가 월별로 파티션되어 있다고 가정
+-- PARTITION BY RANGE (YEAR(controlled_at) * 100 + MONTH(controlled_at))
+
+-- 특정 파티션만 스캔 (빠름)
+SELECT
+    DATE(controlled_at) as date,
+    COUNT(*) as control_count
+FROM device_control_logs PARTITION (p202510)  -- 2025년 10월 파티션만
+WHERE controlled_at >= '2025-10-01'
+  AND controlled_at < '2025-11-01'
+GROUP BY DATE(controlled_at);
+
+-- 파티션 프루닝 활용
+EXPLAIN PARTITIONS
+SELECT *
+FROM device_control_logs
+WHERE controlled_at BETWEEN '2025-10-01' AND '2025-10-31';
+```
+
+---
+
+## 25. 전문 검색 (Full-Text Search)
+
+### 시나리오: 상품명, 설명에서 키워드 검색
+```sql
+-- products 테이블에 FULLTEXT INDEX 추가
+-- ALTER TABLE products ADD FULLTEXT INDEX ft_search (name, description);
+
+-- 자연어 검색
+SELECT
+    name,
+    description,
+    MATCH(name, description) AGAINST ('커피 아이스' IN NATURAL LANGUAGE MODE) as relevance
+FROM products
+WHERE MATCH(name, description) AGAINST ('커피 아이스' IN NATURAL LANGUAGE MODE)
+ORDER BY relevance DESC;
+
+-- 불린 모드 검색 (+필수, -제외)
+SELECT name, description
+FROM products
+WHERE MATCH(name, description)
+    AGAINST ('+커피 -디카페인' IN BOOLEAN MODE);
+
+-- 쿼리 확장 (유사 단어 포함)
+SELECT name, description
+FROM products
+WHERE MATCH(name, description)
+    AGAINST ('라떼' WITH QUERY EXPANSION)
+LIMIT 10;
+```
+
+---
+
+## 26. 데이터 마이그레이션 (INSERT ... SELECT)
+
+### 시나리오: 이전 주문 데이터를 아카이브 테이블로 이동
+```sql
+-- 아카이브 테이블 생성
+CREATE TABLE orders_archive LIKE orders;
+
+-- 1년 이상 된 주문 이동
+START TRANSACTION;
+
+INSERT INTO orders_archive
+SELECT *
+FROM orders
+WHERE ordered_at < DATE_SUB(CURDATE(), INTERVAL 1 YEAR);
+
+DELETE FROM orders
+WHERE ordered_at < DATE_SUB(CURDATE(), INTERVAL 1 YEAR);
+
+COMMIT;
+
+-- 검증: 이동된 데이터 확인
+SELECT
+    'orders' as table_name,
+    COUNT(*) as count,
+    MIN(ordered_at) as oldest,
+    MAX(ordered_at) as newest
+FROM orders
+UNION ALL
+SELECT
+    'orders_archive',
+    COUNT(*),
+    MIN(ordered_at),
+    MAX(ordered_at)
+FROM orders_archive;
+```
+
+---
+
+## 27. 조건부 업데이트 (CASE in UPDATE)
+
+### 시나리오: 주문 상태별 자동 업데이트
+```sql
+-- 주문 상태 자동 진행
+UPDATE orders
+SET
+    order_status = CASE
+        WHEN order_status = 'PENDING' AND TIMESTAMPDIFF(HOUR, ordered_at, NOW()) >= 1
+            THEN 'PREPARING'
+        WHEN order_status = 'PREPARING' AND TIMESTAMPDIFF(HOUR, ordered_at, NOW()) >= 3
+            THEN 'DELIVERING'
+        WHEN order_status = 'DELIVERING' AND TIMESTAMPDIFF(HOUR, ordered_at, NOW()) >= 6
+            THEN 'DELIVERED'
+        ELSE order_status
+    END,
+    updated_at = NOW()
+WHERE order_status IN ('PENDING', 'PREPARING', 'DELIVERING');
+
+-- 여러 조건으로 다른 컬럼 업데이트
+UPDATE users u
+LEFT JOIN (
+    SELECT user_id, COUNT(*) as order_count, SUM(total_amount) as total_spent
+    FROM orders
+    WHERE ordered_at >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+    GROUP BY user_id
+) o ON u.id = o.user_id
+SET
+    u.status = CASE
+        WHEN o.total_spent >= 1000000 THEN 'VIP'
+        WHEN o.total_spent >= 500000 THEN 'GOLD'
+        WHEN o.order_count >= 10 THEN 'SILVER'
+        ELSE u.status
+    END;
+```
+
+---
+
+## 28. 임시 테이블 활용 (Temporary Tables)
+
+### 시나리오: 복잡한 집계를 임시 테이블로 단계적 처리
+```sql
+-- 임시 테이블 생성
+CREATE TEMPORARY TABLE temp_user_stats (
+    user_id BIGINT,
+    device_count INT,
+    order_count INT,
+    total_spent DECIMAL(10, 2),
+    reservation_count INT,
+    PRIMARY KEY (user_id)
+);
+
+-- 1단계: 디바이스 집계
+INSERT INTO temp_user_stats (user_id, device_count, order_count, total_spent, reservation_count)
+SELECT
+    u.id,
+    COUNT(DISTINCT d.id),
+    0, 0, 0
+FROM users u
+LEFT JOIN devices d ON u.id = d.user_id
+GROUP BY u.id;
+
+-- 2단계: 주문 집계 업데이트
+UPDATE temp_user_stats tus
+INNER JOIN (
+    SELECT user_id, COUNT(*) as cnt, SUM(total_amount) as spent
+    FROM orders
+    GROUP BY user_id
+) o ON tus.user_id = o.user_id
+SET
+    tus.order_count = o.cnt,
+    tus.total_spent = o.spent;
+
+-- 3단계: 예약 집계 업데이트
+UPDATE temp_user_stats tus
+INNER JOIN (
+    SELECT user_id, COUNT(*) as cnt
+    FROM reservations
+    GROUP BY user_id
+) r ON tus.user_id = r.user_id
+SET tus.reservation_count = r.cnt;
+
+-- 최종 조회
+SELECT
+    u.name,
+    u.dong,
+    u.ho,
+    tus.*
+FROM temp_user_stats tus
+INNER JOIN users u ON tus.user_id = u.id
+ORDER BY tus.total_spent DESC;
+
+-- 임시 테이블 삭제 (세션 종료 시 자동 삭제됨)
+DROP TEMPORARY TABLE temp_user_stats;
+```
+
+---
+
+## 29. 인덱스 힌트 사용
+
+### 시나리오: 옵티마이저가 잘못된 인덱스를 선택할 때 강제 지정
+```sql
+-- 인덱스 확인
+SHOW INDEX FROM orders;
+
+-- USE INDEX: 특정 인덱스 사용 권장
+SELECT *
+FROM orders USE INDEX (idx_ordered_at)
+WHERE ordered_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+  AND user_id = 1;
+
+-- FORCE INDEX: 특정 인덱스 강제 사용
+SELECT
+    u.name,
+    COUNT(o.id) as order_count
+FROM users u
+INNER JOIN orders o FORCE INDEX (idx_user_id)
+    ON u.id = o.user_id
+WHERE o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+GROUP BY u.id, u.name;
+
+-- IGNORE INDEX: 특정 인덱스 무시
+SELECT *
+FROM orders IGNORE INDEX (PRIMARY)
+WHERE total_amount > 100000;
+```
+
+---
+
+## 30. 멀티 컬럼 인덱스 활용과 커버링 인덱스
+
+### 시나리오: 쿼리 성능 극대화
+```sql
+-- 복합 인덱스 생성 (순서가 중요!)
+CREATE INDEX idx_orders_composite
+ON orders(user_id, ordered_at, order_status);
+
+-- 인덱스 순서대로 조건 사용 (인덱스 활용 O)
+EXPLAIN
+SELECT user_id, ordered_at, order_status
+FROM orders
+WHERE user_id = 1
+  AND ordered_at >= '2025-10-01'
+  AND order_status = 'DELIVERED';
+
+-- 커버링 인덱스: SELECT 컬럼이 모두 인덱스에 포함 (테이블 접근 불필요)
+CREATE INDEX idx_orders_covering
+ON orders(user_id, ordered_at, order_status, total_amount);
+
+EXPLAIN
+SELECT user_id, ordered_at, order_status, total_amount
+FROM orders
+WHERE user_id = 1
+  AND ordered_at >= '2025-10-01';
+-- Extra: Using index (커버링 인덱스 사용)
+
+-- 인덱스 머지 (Multiple Index Merge)
+EXPLAIN
+SELECT *
+FROM orders
+WHERE user_id = 1
+   OR order_status = 'PENDING';
+-- type: index_merge (여러 인덱스 동시 활용)
+
+-- 인덱스 컨디션 푸시다운 (ICP)
+SET optimizer_switch='index_condition_pushdown=on';
+
+EXPLAIN
+SELECT u.name, o.total_amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE o.ordered_at >= '2025-10-01'
+  AND o.total_amount > 50000;
+-- Extra: Using index condition
+```
+
+---
+
+## 난이도별 분류 (30가지)
+
+### 🔥🔥 최고 난이도 (Expert)
+- #2: 재귀 쿼리
+- #6: 동적 피벗
+- #14: 연속 이벤트 찾기
+- #24: 파티션 테이블 최적화
+- #30: 멀티 컬럼 인덱스 & 커버링 인덱스
+
+### 🔥 매우 어려움 (Advanced)
+- #1: 윈도우 함수
+- #4: 이동 평균
+- #8: 퍼센타일
+- #15: 복합 조건 집계
+- #17: 중복 제거 집계
+- #20: VIP 선정 (복합 필터링)
+- #23: 트랜잭션 격리 수준
+- #28: 임시 테이블 활용
+
+### 🔴 어려움 (Intermediate-Advanced)
+- #3: 피벗 테이블
+- #5: 갭 분석
+- #7: 누적 합계
+- #10: 상관 서브쿼리
+- #13: 날짜 범위별 집계
+- #22: JSON 데이터 처리
+- #25: Full-Text Search
+- #27: 조건부 업데이트
+- #29: 인덱스 힌트
+
+### 🟡 중급 (Intermediate)
+- #9: 자기 조인
+- #11: EXISTS vs IN
+- #12: 복잡한 GROUP BY
+- #16: 교차 집계
+- #18: 비율 계산
+- #19: 시계열 갭 채우기
+- #21: UNION vs UNION ALL
+- #26: 데이터 마이그레이션
+
+---
+
+## 학습 로드맵 (30단계)
+
+### Phase 1: 기초 다지기 (1-5)
+1. 자기 조인 (#9)
+2. EXISTS vs IN (#11)
+3. 복잡한 GROUP BY (#12)
+4. 교차 집계 (#16)
+5. UNION ALL (#21)
+
+### Phase 2: 윈도우 함수 마스터 (6-10)
+6. 윈도우 함수 기본 (#1)
+7. 누적 합계 (#7)
+8. 이동 평균 (#4)
+9. 퍼센타일 (#8)
+10. 순위 함수 응용
+
+### Phase 3: 날짜 & 시계열 (11-15)
+11. 날짜 범위 집계 (#13)
+12. 시계열 갭 채우기 (#19)
+13. 갭 분석 (#5)
+14. 연속 이벤트 (#14)
+15. 비율 계산 (#18)
+
+### Phase 4: 고급 집계 & 변환 (16-20)
+16. 피벗 테이블 (#3)
+17. 동적 피벗 (#6)
+18. 복합 조건 집계 (#15)
+19. 중복 제거 집계 (#17)
+20. VIP 선정 (#20)
+
+### Phase 5: 최적화 & 성능 (21-25)
+21. 상관 서브쿼리 (#10)
+22. 트랜잭션 & 락 (#23)
+23. 인덱스 힌트 (#29)
+24. 커버링 인덱스 (#30)
+25. 파티션 테이블 (#24)
+
+### Phase 6: 고급 기능 (26-30)
+26. 재귀 쿼리 (#2)
+27. JSON 처리 (#22)
+28. Full-Text Search (#25)
+29. 임시 테이블 (#28)
+30. 데이터 마이그레이션 (#26, #27)
+
+---
+
+## 실무 팁
+
+1. **EXPLAIN 습관화**: 모든 쿼리에 EXPLAIN 실행
+2. **인덱스 설계**: WHERE, JOIN, ORDER BY 컬럼에 인덱스
+3. **쿼리 단순화**: 복잡한 쿼리는 여러 단계로 분리
+4. **페이징 필수**: LIMIT + OFFSET 또는 커서 기반
+5. **통계 정보 갱신**: ANALYZE TABLE 주기적 실행
+
+각 쿼리를 실제로 실행해보면서 EXPLAIN으로 실행 계획을 확인하면 더 깊이 이해할 수 있습니다!

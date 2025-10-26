@@ -4,6 +4,8 @@ import com.hyun.homeniq.homeniq.model.entity.User;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.util.List;
+
 /**
  * 사용자 MyBatis Mapper 인터페이스
  */
@@ -39,4 +41,14 @@ public interface UserMapper {
      * 이메일 중복 체크
      */
     int countByEmail(@Param("email") String email);
+
+    /**
+     * 전체 주민 목록 조회
+     */
+    List<User> findAll();
+
+    /**
+     * 동/호로 주민 조회
+     */
+    User findByDongAndHo(@Param("dong") String dong, @Param("ho") String ho);
 }

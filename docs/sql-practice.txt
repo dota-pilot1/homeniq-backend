@@ -1,0 +1,340 @@
+# SQL JOIN 활용 시나리오 - Super-HomeniQ 프로젝트
+
+## 현재 상황
+- users 테이블 하나로 회원(주민) 정보 관리
+- JOIN이 필요 없는 단순 구조
+
+## JOIN이 필요한 경우
+
+### 1. IoT 디바이스 관리 (1:N 관계)
+**테이블 구조:**
+```sql
+-- 주민 (users 테이블은 이미 존재)
+users (id, email, name, dong, ho, ...)
+
+-- 디바이스 테이블 추가
+devices (
+    id,
+    user_id,           -- FK: users.id
+    device_type,       -- '조명', '에어컨', '난방', '환기'
+    device_name,
+    location,          -- '거실', '안방', '주방'
+    status,            -- 'ON', 'OFF'
+    created_at
+)
+```
+
+**JOIN 쿼리 예시:**
+```sql
+-- 특정 주민의 모든 디바이스 조회
+SELECT u.name, u.dong, u.ho, d.device_type, d.device_name, d.status
+FROM users u
+INNER JOIN devices d ON u.id = d.user_id
+WHERE u.id = 1;
+
+-- 101동 전체 주민의 디바이스 현황
+SELECT u.dong, u.ho, u.name,
+       COUNT(d.id) as device_count,
+       SUM(CASE WHEN d.status = 'ON' THEN 1 ELSE 0 END) as on_count
+FROM users u
+LEFT JOIN devices d ON u.id = d.user_id
+WHERE u.dong = '101'
+GROUP BY u.id, u.dong, u.ho, u.name
+ORDER BY u.ho;
+```
+
+---
+
+### 2. 커뮤니티 시설 예약 (N:M 관계)
+**테이블 구조:**
+```sql
+-- 시설 테이블
+community_facilities (
+    id,
+    facility_type,     -- '골프존', '독서실', '피트니스', '스터디룸'
+    name,
+    capacity,
+    operating_hours
+)
+
+-- 예약 테이블 (중간 테이블)
+reservations (
+    id,
+    user_id,           -- FK: users.id
+    facility_id,       -- FK: community_facilities.id
+    reservation_date,
+    start_time,
+    end_time,
+    status             -- 'CONFIRMED', 'CANCELLED'
+)
+```
+
+**JOIN 쿼리 예시:**
+```sql
+-- 주민별 예약 내역 조회 (3-way JOIN)
+SELECT u.name, u.dong, u.ho,
+       f.facility_type, f.name,
+       r.reservation_date, r.start_time, r.end_time
+FROM reservations r
+INNER JOIN users u ON r.user_id = u.id
+INNER JOIN community_facilities f ON r.facility_id = f.id
+WHERE u.id = 1
+  AND r.status = 'CONFIRMED'
+ORDER BY r.reservation_date DESC;
+
+-- 오늘 예약 현황 (동별 집계)
+SELECT u.dong,
+       COUNT(r.id) as total_reservations,
+       COUNT(DISTINCT u.id) as unique_users
+FROM reservations r
+INNER JOIN users u ON r.user_id = u.id
+WHERE r.reservation_date = CURDATE()
+GROUP BY u.dong
+ORDER BY u.dong;
+
+-- 인기 시설 TOP 5 (지난 한 달)
+SELECT f.facility_type, f.name,
+       COUNT(r.id) as reservation_count,
+       COUNT(DISTINCT r.user_id) as unique_users
+FROM community_facilities f
+LEFT JOIN reservations r ON f.id = r.facility_id
+    AND r.reservation_date >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+GROUP BY f.id, f.facility_type, f.name
+ORDER BY reservation_count DESC
+LIMIT 5;
+```
+
+---
+
+### 3. 딜리픽미 (주문/배송) (복잡한 M:N)
+**테이블 구조:**
+```sql
+-- 상품 테이블
+products (
+    id,
+    name,
+    category,          -- '음료', '식품', '생필품'
+    price,
+    stock,
+    image_url
+)
+
+-- 주문 테이블
+orders (
+    id,
+    user_id,           -- FK: users.id
+    total_amount,
+    order_status,      -- 'PENDING', 'PREPARING', 'DELIVERING', 'DELIVERED'
+    delivery_location, -- '집 앞', '경비실', '무인택배함'
+    ordered_at
+)
+
+-- 주문 상세 테이블 (중간 테이블)
+order_items (
+    id,
+    order_id,          -- FK: orders.id
+    product_id,        -- FK: products.id
+    quantity,
+    price              -- 주문 당시 가격 (가격 변동 대비)
+)
+```
+
+**JOIN 쿼리 예시:**
+```sql
+-- 주문 상세 내역 조회 (4-way JOIN)
+SELECT o.id as order_id,
+       u.name, u.dong, u.ho,
+       p.name as product_name,
+       oi.quantity,
+       oi.price,
+       (oi.quantity * oi.price) as subtotal,
+       o.order_status,
+       o.ordered_at
+FROM orders o
+INNER JOIN users u ON o.user_id = u.id
+INNER JOIN order_items oi ON o.id = oi.order_id
+INNER JOIN products p ON oi.product_id = p.id
+WHERE o.id = 1;
+
+-- 주민별 주문 통계 (최근 3개월)
+SELECT u.dong, u.ho, u.name,
+       COUNT(DISTINCT o.id) as order_count,
+       SUM(o.total_amount) as total_spent,
+       AVG(o.total_amount) as avg_order_amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+    AND o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+GROUP BY u.id, u.dong, u.ho, u.name
+HAVING order_count > 0
+ORDER BY total_spent DESC;
+
+-- 인기 상품 TOP 10 (판매량 기준)
+SELECT p.category, p.name,
+       SUM(oi.quantity) as total_sold,
+       COUNT(DISTINCT oi.order_id) as order_count,
+       SUM(oi.quantity * oi.price) as revenue
+FROM products p
+INNER JOIN order_items oi ON p.id = oi.product_id
+INNER JOIN orders o ON oi.order_id = o.id
+WHERE o.order_status IN ('DELIVERING', 'DELIVERED')
+GROUP BY p.id, p.category, p.name
+ORDER BY total_sold DESC
+LIMIT 10;
+```
+
+---
+
+### 4. 디바이스 제어 로그 (1:N:N)
+**테이블 구조:**
+```sql
+-- 디바이스 제어 로그
+device_control_logs (
+    id,
+    device_id,         -- FK: devices.id
+    action,            -- 'ON', 'OFF', 'SET_TEMPERATURE'
+    value,             -- 온도 값 등
+    controlled_at
+)
+```
+
+**JOIN 쿼리 예시:**
+```sql
+-- 주민별 디바이스 사용 통계 (시간대별)
+SELECT u.name, u.dong, u.ho,
+       d.device_type,
+       HOUR(dcl.controlled_at) as hour,
+       COUNT(dcl.id) as usage_count
+FROM users u
+INNER JOIN devices d ON u.id = d.user_id
+INNER JOIN device_control_logs dcl ON d.id = dcl.device_id
+WHERE dcl.controlled_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+GROUP BY u.id, d.device_type, HOUR(dcl.controlled_at)
+ORDER BY u.id, hour;
+
+-- 가장 많이 사용되는 디바이스 (동별)
+SELECT u.dong,
+       d.device_type,
+       COUNT(dcl.id) as usage_count,
+       COUNT(DISTINCT d.id) as device_count
+FROM users u
+INNER JOIN devices d ON u.id = d.user_id
+LEFT JOIN device_control_logs dcl ON d.id = dcl.device_id
+    AND dcl.controlled_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+GROUP BY u.dong, d.device_type
+ORDER BY u.dong, usage_count DESC;
+```
+
+---
+
+### 5. 대시보드 통합 쿼리 (복합 JOIN)
+**시나리오: 관리자 대시보드 - 주민별 종합 정보**
+```sql
+SELECT
+    u.dong, u.ho, u.name, u.phone,
+
+    -- 디바이스 현황
+    COUNT(DISTINCT d.id) as total_devices,
+    SUM(CASE WHEN d.status = 'ON' THEN 1 ELSE 0 END) as devices_on,
+
+    -- 예약 현황
+    COUNT(DISTINCT r.id) as active_reservations,
+
+    -- 주문 현황
+    COUNT(DISTINCT o.id) as total_orders,
+    SUM(o.total_amount) as total_spent
+
+FROM users u
+LEFT JOIN devices d ON u.id = d.user_id
+LEFT JOIN reservations r ON u.id = r.user_id
+    AND r.status = 'CONFIRMED'
+    AND r.reservation_date >= CURDATE()
+LEFT JOIN orders o ON u.id = o.user_id
+    AND o.ordered_at >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+WHERE u.status = 'ACTIVE'
+GROUP BY u.id, u.dong, u.ho, u.name, u.phone
+ORDER BY u.dong, u.ho;
+```
+
+---
+
+## JOIN 사용이 필요한 상황 정리
+
+### 1. 1:N 관계 (One-to-Many)
+- 한 주민이 여러 디바이스 소유
+- 한 주민이 여러 주문
+- **사용 쿼리**: INNER JOIN, LEFT JOIN
+
+### 2. N:M 관계 (Many-to-Many)
+- 여러 주민이 여러 시설 예약
+- 여러 주문에 여러 상품
+- **중간 테이블 필요**: reservations, order_items
+- **사용 쿼리**: 3-way JOIN 이상
+
+### 3. 집계 쿼리 (Aggregation)
+- 동별, 주민별, 시설별 통계
+- **사용**: GROUP BY + JOIN
+- **함수**: COUNT, SUM, AVG, MAX, MIN
+
+### 4. 서브쿼리 대체
+- JOIN이 서브쿼리보다 성능 좋음
+- 인덱스 활용 가능
+
+---
+
+## 실무 팁
+
+### 1. JOIN 순서 최적화
+```sql
+-- BAD: 큰 테이블부터 JOIN
+FROM big_table
+JOIN small_table
+
+-- GOOD: 작은 테이블 또는 필터링된 테이블부터
+FROM small_table
+JOIN big_table
+WHERE small_table.filtered_column = 'value'
+```
+
+### 2. 인덱스 활용
+```sql
+-- FK 컬럼에 인덱스 생성
+CREATE INDEX idx_devices_user_id ON devices(user_id);
+CREATE INDEX idx_reservations_user_id ON reservations(user_id);
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+```
+
+### 3. EXPLAIN으로 실행 계획 확인
+```sql
+EXPLAIN SELECT ...
+FROM users u
+INNER JOIN devices d ON u.id = d.user_id;
+```
+
+### 4. LEFT JOIN vs INNER JOIN
+- **INNER JOIN**: 양쪽 모두 존재하는 데이터만
+- **LEFT JOIN**: 왼쪽 테이블 전체 + 오른쪽 매칭 (없으면 NULL)
+
+```sql
+-- 디바이스 없는 주민도 포함
+SELECT u.name, COUNT(d.id) as device_count
+FROM users u
+LEFT JOIN devices d ON u.id = d.user_id
+GROUP BY u.id;
+
+-- 디바이스 있는 주민만
+SELECT u.name, COUNT(d.id) as device_count
+FROM users u
+INNER JOIN devices d ON u.id = d.user_id
+GROUP BY u.id;
+```
+
+---
+
+## 다음 단계 연습 추천
+
+1. **Phase 2**: devices 테이블 생성 → 1:N JOIN 연습
+2. **Phase 3**: reservations 테이블 생성 → N:M JOIN 연습
+3. **Phase 4**: orders, order_items 생성 → 복잡한 JOIN 연습
+4. **Phase 5**: 통합 대시보드 쿼리 작성
+
+각 Phase를 순차적으로 진행하면 JOIN 마스터 가능!

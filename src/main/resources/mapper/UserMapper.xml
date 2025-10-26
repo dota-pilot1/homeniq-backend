@@ -9,20 +9,30 @@
         <result property="email" column="email"/>
         <result property="password" column="password"/>
         <result property="name" column="name"/>
+        <result property="dong" column="dong"/>
+        <result property="ho" column="ho"/>
+        <result property="phone" column="phone"/>
+        <result property="moveInDate" column="move_in_date"/>
+        <result property="familyCount" column="family_count"/>
+        <result property="vehicleCount" column="vehicle_count"/>
+        <result property="status" column="status"/>
+        <result property="notes" column="notes"/>
         <result property="createdAt" column="created_at"/>
         <result property="updatedAt" column="updated_at"/>
     </resultMap>
 
     <!-- 이메일로 사용자 조회 -->
     <select id="findByEmail" resultMap="UserResultMap">
-        SELECT id, email, password, name, created_at, updated_at
+        SELECT id, email, password, name, dong, ho, phone, move_in_date,
+               family_count, vehicle_count, status, notes, created_at, updated_at
         FROM users
         WHERE email = #{email}
     </select>
 
     <!-- ID로 사용자 조회 -->
     <select id="findById" resultMap="UserResultMap">
-        SELECT id, email, password, name, created_at, updated_at
+        SELECT id, email, password, name, dong, ho, phone, move_in_date,
+               family_count, vehicle_count, status, notes, created_at, updated_at
         FROM users
         WHERE id = #{id}
     </select>
@@ -38,7 +48,15 @@
     <update id="update" parameterType="com.hyun.homeniq.homeniq.model.entity.User">
         UPDATE users
         SET name = #{name},
-            email = #{email}
+            email = #{email},
+            dong = #{dong},
+            ho = #{ho},
+            phone = #{phone},
+            move_in_date = #{moveInDate},
+            family_count = #{familyCount},
+            vehicle_count = #{vehicleCount},
+            status = #{status},
+            notes = #{notes}
         WHERE id = #{id}
     </update>
 
@@ -53,6 +71,22 @@
         SELECT COUNT(*)
         FROM users
         WHERE email = #{email}
+    </select>
+
+    <!-- 전체 주민 목록 조회 -->
+    <select id="findAll" resultMap="UserResultMap">
+        SELECT id, email, password, name, dong, ho, phone, move_in_date,
+               family_count, vehicle_count, status, notes, created_at, updated_at
+        FROM users
+        ORDER BY dong, ho
+    </select>
+
+    <!-- 동/호로 주민 조회 -->
+    <select id="findByDongAndHo" resultMap="UserResultMap">
+        SELECT id, email, password, name, dong, ho, phone, move_in_date,
+               family_count, vehicle_count, status, notes, created_at, updated_at
+        FROM users
+        WHERE dong = #{dong} AND ho = #{ho}
     </select>
 
 </mapper>
